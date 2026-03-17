@@ -2,11 +2,28 @@ from manim import *
 
 class demoScene(Scene):
     def construct(self):
-        astar_text = Tex(r"Pathfinding Fundamentals", font_size=86)
+        astar_text = Tex(r"The Lunch Memes Podcast", font_size=112)
+        # astar_text = Tex(r"Pathfinding Fundamentals", font_size=86)
         # astar_text = Tex(r"The A$^\ast$ Algorithm", font_size=92)
         astar_text.move_to(UP)
         # astar_text.to_corner(UP + LEFT)
         self.play(Write(astar_text), run_time=1.5)
+        self.wait(0.05)
+        astar_text2 = Tex(r"Episode 7: Origins", font_size=82)
+        astar_text2.next_to(astar_text, DOWN)
+        # astar_text.to_corner(UP + LEFT)
+        self.play(Write(astar_text2), run_time=1.5)
+        self.wait(1)
+        
+        astar_text3 = Tex(r"Hosted by Cameron Smith", font_size=64)
+        astar_text3.next_to(astar_text2, DOWN * 2)
+        # astar_text.to_corner(UP + LEFT)
+        self.play(Write(astar_text3), run_time=1.5)
+        self.wait(1)
+        astar_text4 = Tex(r"Special Guest: Nobby", font_size=64)
+        astar_text4.next_to(astar_text3, DOWN)
+        # astar_text.to_corner(UP + LEFT)
+        self.play(Write(astar_text4), run_time=1.5)
         self.wait(1)
         
         # astar_text = Tex(r"The A$^\ast$ Algorithm")

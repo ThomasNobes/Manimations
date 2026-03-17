@@ -11,6 +11,10 @@ wheels/
 
 # Output files
 *media/
+*/*media/
+
+# Pathfinding Links
+*/pathfinding_link
 
 # Miscellaneous
 uv.lock

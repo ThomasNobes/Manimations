@@ -139,7 +139,6 @@ class CornerTable(VGroup):
         
         start_lab = Tex('start', color=BLUE).next_to(row_labels_group, LEFT).rotate(PI/2)
         target_lab = Tex('target', color=BLUE).next_to(col_labels_group, UP)
-        
             
         # Group everything
         full_table = VGroup(table, row_labels_group, col_labels_group, start_lab, target_lab)
@@ -577,20 +576,13 @@ class CompressedPathDatabasesScene(MovingCameraScene):
         self.wait()
         self.play(FadeOut(tiles))
         
-        self.play(Write(table_frame.table),
-                  Write(table.row_labels),
-                  Write(table.col_labels),
-                  Write(table.start_lab),
-                  Write(table.target_lab),
-                  )
+        self.play(Write(table_frame))
         self.wait()
         start_node = 0
         self.play(Write(table.table.get_rows()[start_node]))
         self.wait()
         
-        return
-    
-        # save mobject states so that we can retreive after 'Unrwite'
+        # save mobject states so that we can retreive after 'Unwrite'
         for i in range(1, len(table.table.get_rows()[start_node])):
             table.table.get_rows()[start_node][i].save_state()
         self.play(Unwrite(table.table.get_rows()[start_node][1:]))
@@ -628,8 +620,9 @@ class CompressedPathDatabasesScene(MovingCameraScene):
             self.wait(0.5 - 0.05 * i)
             self.play(Uncreate(path))
             self.play(Uncreate(arrow_label), Uncreate(arrow))
-        # draw the corresponding element between each step
         self.wait()
+        
+        # draw the corresponding element between each step
         self.play(nodes[start_node][0].animate.set_fill(blended_blue),
                   table.table.get_rows()[start_node][0].animate.set_color(WHITE),
                   table.row_labels[0].animate.set_color(WHITE),
@@ -642,12 +635,10 @@ class CompressedPathDatabasesScene(MovingCameraScene):
             print("i", i)
             diagonal_axes.add(table.table.get_rows()[i][i])
         self.play(*[Indicate(mob) for mob in diagonal_axes], color=YELLOW, scale_factor=2)
-        # self.table.
+        self.add(table)
         self.remove(table_frame)
         self.wait()
-        
-        # return
-        
+                
         row_to_color = 3
         table.row_labels[row_to_color].set_color(YELLOW)
         row = table.table.get_rows()[row_to_color]

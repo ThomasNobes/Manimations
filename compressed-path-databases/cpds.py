@@ -559,6 +559,7 @@ class CompressedPathDatabasesScene(MovingCameraScene):
         table_frame = table.copy()
         table_frame.table.get_entries().set_opacity(0)
         self.camera.frame.move_to(group)
+        tiles.set_z_index(-2)
         
         # Add all tiles
         self.add(tiles)
@@ -705,26 +706,27 @@ class CompressedPathDatabasesScene(MovingCameraScene):
                   rle_num2.animate.shift(UP*shift_amount),
         )
         
-        swapped_table = table.copy()
-        swapped_rle = rle_table.copy()
-        save_loc = swapped_rle.copy()
+        swapped_table = table.copy().set_z_index(-2)
+        swapped_rle = rle_table.copy().set_z_index(-2)
+        save_loc = swapped_rle.copy().set_z_index(-2)
+        swapped_table.start_lab.set_color(GREEN),
+        swapped_table.target_lab.set_color(GREEN),
+        swapped_rle.start_lab.set_color(GREEN),
+        swapped_rle.target_lab.set_color(GREEN),
+                
         self.play(
                 swapped_table.animate.shift(DOWN*2.1*shift_amount),
                 swapped_rle.animate.shift(DOWN*2.1*shift_amount),
                 FadeOut(swapped_rle.table.get_entries()),
         )
-        self.play(
-                swapped_table.start_lab.animate.set_color(GREEN),
-                swapped_table.target_lab.animate.set_color(GREEN),
-                swapped_rle.start_lab.animate.set_color(GREEN),
-                swapped_rle.target_lab.animate.set_color(GREEN),
-        )
         
         columns = swapped_table.table.get_columns()
         pop_index = 2
         popped_col = columns[pop_index]
+        popped_label = swapped_table.col_labels[pop_index]
         shift_amount = popped_col.width * 3
         later_cols = columns[pop_index + 1:]
+        later_col_labels = swapped_table.col_labels[pop_index + 1:]
         last_col = later_cols[-1]
         
         swapped_data = self.move_column_to_end(data, pop_index)
@@ -735,12 +737,15 @@ class CompressedPathDatabasesScene(MovingCameraScene):
                             include_inner_lines=False,
                             )  
 
-        self.play(swapped_table.table.get_columns()[pop_index].animate.set_color(RED))
+        self.play(swapped_table.table.get_columns()[pop_index].animate.set_color(RED),
+                  popped_label.animate.set_color(RED))
         self.wait(0.5)
         self.play(
             # FadeOut(popped_col),
             *[col.animate.shift(LEFT * shift_amount) for col in later_cols],
-            popped_col.animate.shift(RIGHT * shift_amount * 4)
+            *[col_lab.animate.shift(LEFT * shift_amount) for col_lab in later_col_labels],
+            popped_col.animate.shift(RIGHT * shift_amount * len(later_cols)),
+            popped_label.animate.shift(RIGHT * shift_amount * len(later_cols))
             # popped_col.animate.next_to(last_col, RIGHT, buff=swapped_table.table.h_buff)
         )
         self.wait(1)

@@ -79,10 +79,12 @@ GOAL = "#E03131"
 PATH = "#1C7ED6"
 GRID_LINE = "#6C7A89"
 PANEL = "#0D1117"
-# The f-value ramp, lowest f first. Deliberately not START's green or GOAL's red: the two
-# markers sit on the same map as the dots and a scale that borrowed their colours would
-# read as "this jump point is the goal" rather than "this jump point is promising".
-F_STOPS = ("#0CA678", "#F59F00", "#C2255C")
+# The f-value ramp, lowest f first: viridis, sampled at six even stops. Perceptually uniform,
+# so equal steps in f look like equal steps in colour, and monotone in lightness, so the ramp
+# still reads as an ordering in greyscale or to a colourblind viewer. It also runs dark at the
+# promising end, which puts the strongest mark on the dots that matter most against the map.
+# The top stop is pulled back from viridis's pure yellow, which all but vanishes on light cells.
+F_STOPS = ("#440154", "#414487", "#2C728E", "#22A884", "#7AD151", "#DCE319")
 INK = "#E9ECEF"       # only ever used on a dark plate: it is the colour of a free cell
 MAP_INK = "#495867"   # annotation drawn straight onto the map, which is mostly light
 
@@ -410,7 +412,7 @@ def viewport(events, extra):
 # the scene
 # ---------------------------------------------------------------------------
 
-class JumpPointSearchIntro(MovingCameraScene):
+class JumpPointSearchExample(MovingCameraScene):
     """Three expansions cell by cell, then the rest of the search across the whole map."""
 
     # -- small helpers -----------------------------------------------------

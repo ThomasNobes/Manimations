@@ -90,15 +90,25 @@ class GridMapImage(Group):
 
     One mobject regardless of map size: a 194x194 map is 37k cells, which is far past
     what a VGroup of Squares can render in reasonable time.
+
+    `rotate_ccw` turns the picture a quarter turn anticlockwise, so a tall map reads
+    landscape. Cell coordinates are untouched — the search still works in map space, and
+    only the mapping to the scene changes: the map's x axis then runs up the screen and
+    its y axis runs right.
     """
 
-    def __init__(self, free, cell=CELL):
+    def __init__(self, free, cell=CELL, rotate_ccw=False):
         super().__init__()
         self.free = free
         self.cell = cell
-        self.rows, self.cols = free.shape
+        self.rotate_ccw = rotate_ccw
+        self.map_rows, self.map_cols = free.shape
 
         rgb = np.where(free[:, :, None], np.array(FREE_RGB, np.uint8), np.array(WALL_RGB, np.uint8))
+        if rotate_ccw:
+            rgb = np.ascontiguousarray(np.rot90(rgb))
+        self.rows, self.cols = rgb.shape[:2]
+
         image = ImageMobject(rgb)
         image.set_resampling_algorithm(RESAMPLING_ALGORITHMS["nearest"])
         image.height = self.rows * cell
@@ -109,28 +119,35 @@ class GridMapImage(Group):
         self.add(image)
 
     def cell_point(self, state):
-        x, y = state
-        return np.array([
-            (x + 0.5 - self.cols / 2) * self.cell,
-            (self.rows / 2 - y - 0.5) * self.cell,
-            0.0,
-        ])
+        return self.cell_points([state])[0]
 
     def cell_points(self, states):
         arr = np.asarray(states, dtype=float)
+        col, row = arr[:, 0], arr[:, 1]
+        if self.rotate_ccw:
+            col, row = row, self.map_cols - 1 - col
+
         out = np.zeros((len(arr), 3))
-        out[:, 0] = (arr[:, 0] + 0.5 - self.cols / 2) * self.cell
-        out[:, 1] = (self.rows / 2 - arr[:, 1] - 0.5) * self.cell
+        out[:, 0] = (col + 0.5 - self.cols / 2) * self.cell
+        out[:, 1] = (self.rows / 2 - row - 0.5) * self.cell
         return out
+
+    def point_cell(self, point):
+        """Inverse of cell_point: the (fractional) map cell a scene point falls on."""
+        col = point[0] / self.cell + self.cols / 2 - 0.5
+        row = self.rows / 2 - point[1] / self.cell - 0.5
+        if self.rotate_ccw:
+            return self.map_cols - 1 - row, col
+        return col, row
 
 
 DIR_BY_INDEX = [d for d, _ in sorted(Direction.dir_map.items(), key=lambda item: item[1])]
 
 
 class Expansion:
-    def __init__(self, state, rays, jump_points):
+    def __init__(self, state, scans, jump_points):
         self.state = state
-        self.rays = rays  # (end_state, hit_jump_point) per direction scanned
+        self.scans = scans  # (end_state, hit_jump_point) per direction scanned
         self.jump_points = jump_points
 
 
@@ -146,18 +163,18 @@ class RecordingJPS(JumpPointSearch):
         successors = super().expand(node)
         found = {step_direction(node.state, s.state): s.state for s in successors}
 
-        rays = []
+        scans = []
         direction = self.get_dir_from_jp(node.parent, node)
         for index, should_scan in enumerate(self.compute_successors(node, direction)):
             if not should_scan:
                 continue
             scanned = DIR_BY_INDEX[index]
             if scanned in found:
-                rays.append((found[scanned], True))
+                scans.append((found[scanned], True))
             else:
-                rays.append((scan_end(self.free, node.state, scanned), False))
+                scans.append((scan_end(self.free, node.state, scanned), False))
 
-        self.events.append(Expansion(node.state, rays, list(found.values())))
+        self.events.append(Expansion(node.state, scans, list(found.values())))
         return successors
 
 
@@ -181,7 +198,7 @@ def run_search(scenario_file=SCENARIO_FILE, scenario_index=SCENARIO_INDEX):
 
 
 class JumpPointSearchScene(MovingCameraScene):
-    def build_rays(self, grid, event, frame_width):
+    def build_scans(self, grid, event, frame_width):
         origin = grid.cell_point(event.state)
         return VGroup(*[
             Line(
@@ -191,7 +208,7 @@ class JumpPointSearchScene(MovingCameraScene):
                 stroke_width=stroke_at(6 if hit else 3, frame_width),
                 z_index=1,
             )
-            for end, hit in event.rays
+            for end, hit in event.scans
         ])
 
     def build_jump_points(self, grid, event, radius):
@@ -238,14 +255,14 @@ class JumpPointSearchScene(MovingCameraScene):
 
         explored = []
         for event in events[:DETAILED_EXPANSIONS]:
-            rays = self.build_rays(grid, event, zoom_width)
+            scans = self.build_scans(grid, event, zoom_width)
             jump_points = self.build_jump_points(grid, event, JUMP_RADIUS_ZOOM)
             focus = grid.cell_point(event.state)
 
             self.play(frame.animate.move_to(focus), cursor.animate.move_to(focus), run_time=0.7)
-            self.play(LaggedStart(*[Create(ray) for ray in rays], lag_ratio=0.2), run_time=1.0)
+            self.play(LaggedStart(*[Create(scan) for scan in scans], lag_ratio=0.2), run_time=1.0)
             self.play(LaggedStart(*[GrowFromCenter(d) for d in jump_points], lag_ratio=0.2), run_time=0.6)
-            self.play(FadeOut(rays), run_time=0.4)
+            self.play(FadeOut(scans), run_time=0.4)
             explored.extend(jump_points)
 
         # Zoom back out and burn through the rest of the search in batches.
@@ -261,13 +278,13 @@ class JumpPointSearchScene(MovingCameraScene):
         remaining = events[DETAILED_EXPANSIONS:]
         for i in range(0, len(remaining), BATCH_SIZE):
             batch = remaining[i : i + BATCH_SIZE]
-            rays = VGroup(*[ray for e in batch for ray in self.build_rays(grid, e, full_width)])
+            scans = VGroup(*[scan for e in batch for scan in self.build_scans(grid, e, full_width)])
             jump_points = VGroup(*[
                 dot for e in batch for dot in self.build_jump_points(grid, e, JUMP_RADIUS_FULL)
             ])
 
-            self.play(Create(rays, lag_ratio=0), run_time=0.5)
-            self.play(FadeOut(rays), FadeIn(jump_points), run_time=0.4)
+            self.play(Create(scans, lag_ratio=0), run_time=0.5)
+            self.play(FadeOut(scans), FadeIn(jump_points), run_time=0.4)
             explored.extend(jump_points)
 
         self.wait(0.5)

@@ -3,8 +3,9 @@
 The map is nineteen cells by thirteen and hand-authored below, so the whole search fits on
 screen at a size where a cell is worth drawing. Nothing is ever cleared: every scan is an
 arrow growing a cell at a time out of the cell that fired it, and once the scan resolves
-the arrow settles into what it turned out to be — grey and dashed if it found nothing, a
-darker solid version of its own colour if it produced a jump point. The shape of an
+the arrow settles into what it turned out to be — always its own colour, washed out towards
+the paper and dashed if it found nothing, darkened and left solid if it produced a jump
+point, so a dead arrow still says which kind of scan drew it. The shape of an
 expansion stays on the map, and the nine expansions accumulate into a picture of what the
 search actually touched, with every arrow saying whether it paid for itself.
 
@@ -40,14 +41,16 @@ from search.heuristics import OctileDistanceHeuristic
 
 from jps import CELL, load_map_array, step_direction, stroke_at
 
-from example_maps import INTRO_GRID, CENTRAL_START_GRID
+from example_maps import *
 GRID = CENTRAL_START_GRID  # select which map to use for anim
+GRID = TOOTHCOMB_GRID  # select which map to use for anim
 
 START_CHAR, GOAL_CHAR = "S", "G"  # anything else that is not a '.' blocks, per MovingAI
 STRIDE = 1               # cells a straight scan reads per beat: one, at this size
 DETAILED_DIAG_STEPS = 2  # diagonal steps drawn at full pace before the rest speed up
 CELL_FILL = 1.0          # side of a map cell — obstacle, start, goal: the whole cell
 MARK_FILL = 0.86         # ... and of a highlight drawn on one, which stays inside the lines
+MARKER_LETTER = 0.5      # cap height of the S and the G, as a fraction of their cell
 MARK_POP = 1.15          # how far a highlight overshoots as it lands: MARK_FILL * this <= 1
 ARROW_TIP = 0.42 * CELL  # length of an arrowhead, at map scale
 ARROW_DASH = 0.2 * CELL  # dash length on the arrows that found nothing
@@ -75,7 +78,11 @@ GOAL = "#FF8787"
 STRAIGHT = "#F59F00"  # a straight scan, while it is live
 DIAGONAL = "#7048E8"  # a diagonal step
 PROBE = "#4DABF7"     # the straight scans a diagonal step fires before continuing
-MISS = "#A5AEB8"      # a scan that found nothing: this, and dashed
+# What a scan settles into when it found nothing: its own colour washed this far towards the
+# paper, and dashed. Fading rather than greying keeps a dead scan legible as the kind of scan
+# it was — a cyan probe stays cyan — while the drop in contrast still reads as "this bought
+# nothing" beside the darkened solid arrows that did.
+MISS_FADE = 0.55
 # What a scan settles into once it has paid off: its own colour, darkened, and left solid.
 # Keyed by the live colour so a scan can be resolved without being told what kind it was.
 HIT = {
@@ -145,6 +152,16 @@ def promise_colour(f, low, high):
     """Where an f-value sits on the ramp, against the lowest and highest f in the search."""
     span = high - low
     return gradient_at(0.0 if span <= 0 else (f - low) / span)
+
+
+def faded(colour, amount=MISS_FADE):
+    """A scan's colour washed towards the paper: what it settles into when it found nothing.
+
+    Blended rather than made transparent, so a dead scan looks the same whether it happens
+    to lie over bare paper or across an arrow drawn by an earlier expansion, and so the
+    whole-group fade at the end of the scene still has its opacity to spend.
+    """
+    return interpolate_color(ManimColor(colour), ManimColor(PAPER), amount)
 
 
 def readable_ink(colour):
@@ -429,10 +446,21 @@ class SmallGrid:
             for state in self.map_states() if not free[state[1]][state[0]]
         ])
         self.walls.set_z_index(1)
-        self.markers = VGroup(self.filled(start, START), self.filled(goal, GOAL))
+        # The two ends, each a filled cell lettered with what it is. The squares are kept in
+        # a group of their own as well, since they are the only part of a marker that takes
+        # a gridline stroke — see rule().
+        self.marker_cells = VGroup(self.filled(start, START), self.filled(goal, GOAL))
+        self.markers = VGroup(
+            VGroup(self.marker_cells[0], self.marker_label("S", start, START)),
+            VGroup(self.marker_cells[1], self.marker_label("G", goal, GOAL)),
+        )
         # Above the scans and above the jump-point dots: these two cells are the only ones
         # a viewer needs to be able to find at any point in the eighty seconds that follow.
         self.markers.set_z_index(9)
+        # And the letters above the lattice, which is ruled over everything else: a gridline
+        # crossing a glyph would only make it harder to read.
+        for _, label in self.markers:
+            label.set_z_index(11, family=True)
 
     def map_states(self):
         """Every cell of the map proper, in reading order, skipping the padding ring."""
@@ -453,6 +481,18 @@ class SmallGrid:
             fill_color=colour, fill_opacity=1.0,
         ).move_to(self.cell_point(state))
 
+    def marker_label(self, letter, state, colour):
+        """The S or the G, sat in the middle of its cell.
+
+        Sized off the cell rather than through the scene's font(): the letter has to hold its
+        proportion to the square it names whatever the camera ends up at, and the grid is
+        built before the scene knows that width anyway. Inked dark or light against the fill
+        underneath, the same test the f-values in the jump-point dots go through.
+        """
+        label = Text(letter, font_size=48, weight=BOLD, color=readable_ink(colour))
+        label.scale_to_fit_height(MARKER_LETTER * self.cell)
+        return label.move_to(self.cell_point(state))
+
     def rule(self, width):
         """Draw the lattice at `width`: the gridlines, and the edge of every filled cell.
 
@@ -464,7 +504,9 @@ class SmallGrid:
         first thing to know the camera width every stroke here is scaled against.
         """
         self.lines.set_stroke(width=width)
-        for group in (self.walls, self.markers):
+        # The marker squares, not the whole markers: a stroke laid on a Text outlines every
+        # glyph in it, and at this size that alone is enough to blur the letter.
+        for group in (self.walls, self.marker_cells):
             group.set_stroke(color=GRID_LINE, width=width)
 
     def build_lines(self):
@@ -672,7 +714,10 @@ class JumpPointSearchIntroArrows(MovingCameraScene):
             ("arrow", STRAIGHT, "straight scan"),
             ("arrow", DIAGONAL, "diagonal step"),
             ("arrow", PROBE, "scan from a diagonal"),
-            ("dashed", MISS, "found nothing"),
+            # The two outcomes are shown on the straight scan's colour: every kind of scan
+            # fades its own colour when it found nothing and darkens it when it did not, so
+            # one pair of swatches says what the pattern is without repeating it three times.
+            ("dashed", faded(STRAIGHT), "found nothing"),
             ("arrow", HIT[STRAIGHT], "found a jump point"),
             ("ramp", JUMP, "jump point: low f to high f" if COLOUR_JUMP_BY_F else "jump point"),
             ("cell", FORCED, "forced neighbour"),
@@ -818,14 +863,17 @@ class JumpPointSearchIntroArrows(MovingCameraScene):
             return final, [FadeOut(arrow), FadeIn(final)]
         return arrow, [Transform(arrow, final)]
 
-    def kill_beat(self, scan, arrow, beat, z_index=5, width=3.4):
-        """A scan that found nothing: grey the arrow out to dashes. Returns (keep, beat).
+    def kill_beat(self, scan, arrow, colour, beat, z_index=5, width=3.4):
+        """A scan that found nothing: fade the arrow out to dashes. Returns (keep, beat).
+
+        `colour` is the scan's live colour, which it keeps a washed-out version of rather
+        than going grey, so the map still says which kind of scan died where.
 
         The obstacle that stopped it is left unmarked — the dashed arrow already ends on it,
         and an outline on every wall the search ever touched only clutters the map.
         """
         kept, settle = self.settle_arrow(arrow, scan.origin, scan.cells[-1] if scan.cells else None,
-                                         MISS, z_index=z_index, width=width, dashed=True)
+                                         faded(colour), z_index=z_index, width=width, dashed=True)
         return kept, (settle, beat)
 
     def forced_beat(self, scan, beat):
@@ -855,7 +903,7 @@ class JumpPointSearchIntroArrows(MovingCameraScene):
 
         if probe.jump_point is None:
             kept, beat = self.kill_beat(
-                probe, arrow, beat=(0.2 if slow else 0.12) * pace, z_index=4, width=2.2)
+                probe, arrow, PROBE, beat=(0.2 if slow else 0.12) * pace, z_index=4, width=2.2)
             drawn.add(kept)
             beats.append(beat)
         else:
@@ -920,10 +968,10 @@ class JumpPointSearchIntroArrows(MovingCameraScene):
                 found.add(dot)
 
         # A diagonal that walked itself out without ever stopping bought nothing, and goes
-        # dashed and grey like any other scan that found nothing.
+        # dashed and washed out like any other scan that found nothing.
         if scan.jump_point is None and len(arrow):
             kept, settle = self.settle_arrow(arrow, scan.origin, scan.steps[-1].cell,
-                                             MISS, dashed=True)
+                                             faded(DIAGONAL), dashed=True)
             drawn.add(kept)
             self.play(*settle, run_time=0.25 * pace)
 
@@ -963,7 +1011,7 @@ class JumpPointSearchIntroArrows(MovingCameraScene):
                 else:
                     self.say_once("edge", "the edge of the map stops a scan the same way an "
                                           "obstacle does, and returns nothing either")
-                kept, beat = self.kill_beat(scan, arrow, beat=0.25 * pace)
+                kept, beat = self.kill_beat(scan, arrow, STRAIGHT, beat=0.25 * pace)
                 drawn.add(kept)
                 self.play_beats([beat])
             else:
@@ -1066,7 +1114,10 @@ class JumpPointSearchIntroArrows(MovingCameraScene):
                       line_length=0.7 * CELL,
                       line_stroke_width=stroke_at(3.0, self.view_width))
         flash.lines.set_z_index(12)  # Flash builds its lines at z 0, under everything drawn
-        self.play(flash, Indicate(self.grid.markers[1], color=GOAL, scale_factor=1.4),
+        # The square alone pulses, not the marker: Indicate recolours what it is given, and
+        # the G going GOAL-coloured on a GOAL fill would blank the letter for the beat. It
+        # sits still in the middle while the square swells behind it, which reads the same.
+        self.play(flash, Indicate(self.grid.marker_cells[1], color=GOAL, scale_factor=1.4),
                   run_time=1.0)
 
         # -- the path -------------------------------------------------------

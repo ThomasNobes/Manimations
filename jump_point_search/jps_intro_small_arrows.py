@@ -45,6 +45,7 @@ from example_maps import *
 GRID = CENTRAL_START_GRID  # select which map to use for anim
 GRID = TOOTHCOMB_GRID  # select which map to use for anim
 GRID = STAIRCASE_GRID  # select which map to use for anim
+GRID = CHECKERBOARD_GRID  # select which map to use for anim
 
 START_CHAR, GOAL_CHAR = "S", "G"  # anything else that is not a '.' blocks, per MovingAI
 STRIDE = 1               # cells a straight scan reads per beat: one, at this size
@@ -419,6 +420,30 @@ def cells_read(scan):
 
 def plural(count, word):
     return f"{count} {word}" if count == 1 else f"{count} {word}s"
+
+
+def evenly_sampled(corners, samples=240):
+    """The same polyline, re-cornered at points spaced evenly along its length.
+
+    Create hands each bezier in a mobject the same slice of the run time, so a polyline
+    built straight out of its corners is drawn a segment at a time regardless of how long
+    the segments are: a single diagonal step between two jump points takes as long to draw
+    as a run of six cells, and the line visibly stalls on the turns. Cutting every segment
+    into pieces of roughly equal length makes equal-time-per-piece equal-speed-per-pixel.
+    The corners themselves stay in the list so nothing is rounded off.
+    """
+    corners = [np.asarray(c, dtype=float) for c in corners]
+    lengths = [np.linalg.norm(b - a) for a, b in zip(corners, corners[1:])]
+    total = sum(lengths)
+    if total == 0:
+        return corners
+    step = total / samples
+    points = [corners[0]]
+    for start, end, length in zip(corners, corners[1:], lengths):
+        pieces = max(1, round(length / step))
+        for i in range(1, pieces + 1):
+            points.append(start + (end - start) * (i / pieces))
+    return points
 
 
 # ---------------------------------------------------------------------------
@@ -1180,12 +1205,15 @@ class JumpPointSearchIntroArrows(MovingCameraScene):
             corners[0] = self.clear_of_label(corners[0], corners[1], self.grid.markers[0][1])
             corners[-1] = self.clear_of_label(corners[-1], corners[-2], self.grid.markers[1][1])
         path_line = VMobject(z_index=11)
-        path_line.set_points_as_corners(corners)
+        path_line.set_points_as_corners(evenly_sampled(corners))
         path_line.set_stroke(color=PATH, width=stroke_at(4.5, self.view_width))
 
         self.play(jump_points.animate.set_opacity(0.25),
                   scans.animate.set_opacity(0.12), run_time=0.9)
         self.say(f"{plural(len(path), 'jump point')} on the path, "
                  f"and it turns {plural(len(path) - 2, 'time')}")
-        self.play(Create(path_line), run_time=3.0, rate_func=linear)
+        # Eased rather than linear now the speed is even: the line starts and stops instead
+        # of snapping into motion, which a sine ease does without the long crawl either side
+        # that smooth() puts on a three-second draw.
+        self.play(Create(path_line), run_time=3.0, rate_func=rate_functions.ease_in_out_sine)
         self.wait(2)

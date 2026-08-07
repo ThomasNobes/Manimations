@@ -44,6 +44,7 @@ from jps import CELL, load_map_array, step_direction, stroke_at
 from example_maps import *
 GRID = CENTRAL_START_GRID  # select which map to use for anim
 GRID = TOOTHCOMB_GRID  # select which map to use for anim
+GRID = STAIRCASE_GRID  # select which map to use for anim
 
 START_CHAR, GOAL_CHAR = "S", "G"  # anything else that is not a '.' blocks, per MovingAI
 STRIDE = 1               # cells a straight scan reads per beat: one, at this size
@@ -62,6 +63,9 @@ MARGIN_TOP, MARGIN_BOTTOM = 3.4, 0.7
 
 DETAIL_JUMP = 0.32 * CELL    # jump-point dot radius
 LABELLED_JUMP = 0.42 * CELL  # ... widened to hold an f-value, when those are printed
+RING_GAP = 0.03 * CELL       # air between a jump-point dot and the ring drawn around it
+RING_LIMIT = 0.45 * CELL     # ... and how far out that ring is allowed to get: inside the cell
+PATH_LABEL_GAP = 0.1 * CELL  # air left between the path line and the S or the G it runs into
 CAPTION_CHARS = 62           # characters a caption line is wrapped at: two lines, at most
 
 # f is what A* sorts the open list by: the cost of reaching the jump point plus the octile
@@ -573,6 +577,49 @@ class JumpPointSearchIntroArrows(MovingCameraScene):
             fill_opacity=opacity,
             z_index=z_index,
         ).move_to(self.grid.cell_point(cell))
+
+    def node_ring(self, cell, colour, z_index=9):
+        """The mark on a node coming off the open list: a ring traced around its dot.
+
+        Every node on the map is drawn as a dot, so the cursor follows that shape rather
+        than boxing it — a circle just outside the dot's edge, drawn heavier than the
+        outlines used for forced neighbours so it reads as the thing being expanded. The
+        radius is capped short of the cell's own half-width, since the gridlines are ruled
+        over the top and a ring reaching past them would look like it belonged to the
+        neighbouring cell as much as to this one.
+        """
+        radius = min((LABELLED_JUMP if SHOW_F_VALUES else DETAIL_JUMP) + RING_GAP, RING_LIMIT)
+        return Circle(
+            radius=radius,
+            color=colour,
+            stroke_width=stroke_at(4.0, self.view_width),
+            z_index=z_index,
+        ).move_to(self.grid.cell_point(cell))
+
+    def clear_of_label(self, point, towards, label):
+        """`point` pushed out along the line to `towards`, far enough to clear a marker letter.
+
+        The S and the G sit in the middle of the two cells the path ends on, so a line run
+        to the cell centre strikes straight through the glyph. The endpoint is moved to
+        where the line leaves a box around the letter instead: a straight approach clears
+        the glyph's half-width or half-height, a diagonal one clears the side it actually
+        crosses. Worked in scene units off the letter's own box rather than in cells, so
+        the gap left is the same air whichever way the path comes in — shifting by a fixed
+        number of cells would leave a diagonal ending half again as far out as a straight one.
+        """
+        step = np.asarray(towards, dtype=float) - np.asarray(point, dtype=float)
+        length = float(np.linalg.norm(step))
+        if length == 0:
+            return point
+        direction = step / length
+        half = (label.width / 2 + PATH_LABEL_GAP, label.height / 2 + PATH_LABEL_GAP)
+        reach = min(
+            half[axis] / abs(direction[axis]) if abs(direction[axis]) > 1e-9 else np.inf
+            for axis in (0, 1)
+        )
+        # Never past the next corner: on a one-cell first or last leg the line still has to
+        # keep the direction it turns in.
+        return point + direction * min(reach, 0.8 * length)
 
     def arrow_point(self, origin, cell):
         """Where an arrow from `origin` aimed at `cell` should end.
@@ -1088,10 +1135,11 @@ class JumpPointSearchIntroArrows(MovingCameraScene):
                 )
                 if not said:
                     self.say(f"arriving {arrival}: {left} left to scan")
-                # The cell coming off the open list, boxed rather than ringed: the old ring
-                # was wider than a cell and reached over its neighbours.
-                cursor = self.cell_outline(event.state, DIAGONAL, z_index=9)
-                self.play(Create(cursor), run_time=0.3)
+                # The node coming off the open list, ringed round the dot already sitting
+                # there. Created rather than faded in, so the ring traces itself round the
+                # dot and the eye is walked over the cell it is about to scan out of.
+                cursor = self.node_ring(event.state, DIAGONAL)
+                self.play(Create(cursor), run_time=0.45)
                 scans.add(cursor)
 
             drawn, found = self.play_expansion(
@@ -1124,9 +1172,15 @@ class JumpPointSearchIntroArrows(MovingCameraScene):
 
         # A plain unbroken line, no head: nothing about it is a scan, and the goal square it
         # runs into says which end it finished on. Above the gridlines, unlike the scans.
-        corners = self.grid.cell_points(path)
+        # Both ends stop short of the letter in the cell rather than on the cell's centre:
+        # the line is drawn over the markers, and running it into the middle of the S and
+        # the G would strike each glyph through.
+        corners = list(self.grid.cell_points(path))
+        if len(corners) > 1:
+            corners[0] = self.clear_of_label(corners[0], corners[1], self.grid.markers[0][1])
+            corners[-1] = self.clear_of_label(corners[-1], corners[-2], self.grid.markers[1][1])
         path_line = VMobject(z_index=11)
-        path_line.set_points_as_corners(list(corners))
+        path_line.set_points_as_corners(corners)
         path_line.set_stroke(color=PATH, width=stroke_at(4.5, self.view_width))
 
         self.play(jump_points.animate.set_opacity(0.25),

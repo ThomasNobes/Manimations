@@ -40,31 +40,15 @@ from search.heuristics import OctileDistanceHeuristic
 
 from jps import CELL, load_map_array, step_direction, stroke_at
 
+from example_maps import INTRO_GRID, CENTRAL_START_GRID
+GRID = CENTRAL_START_GRID  # select which map to use for anim
 
-# The map. '@' blocks, 'S' starts, 'G' is the goal, and both of those are free cells.
-# The two features that make the search worth watching: the staircase across the middle,
-# which no diagonal can cut through, and the wall on the right, which reaches the bottom
-# edge so the only way to the goal is over the top of it.
-GRID = [
-    "...................",
-    ".@.................",
-    ".@.................",
-    ".@...@@............",
-    ".......@...........",
-    "........@..........",
-    "........@.......@..",
-    "................@..",
-    "................@..",
-    "....S...........@..",
-    "................@..",
-    "............@...@.G",
-    "............@...@..",
-]
 START_CHAR, GOAL_CHAR = "S", "G"  # anything else that is not a '.' blocks, per MovingAI
-
 STRIDE = 1               # cells a straight scan reads per beat: one, at this size
 DETAILED_DIAG_STEPS = 2  # diagonal steps drawn at full pace before the rest speed up
-CELL_FILL = 0.86         # side of a drawn cell, leaving the gridlines showing around it
+CELL_FILL = 1.0          # side of a map cell — obstacle, start, goal: the whole cell
+MARK_FILL = 0.86         # ... and of a highlight drawn on one, which stays inside the lines
+MARK_POP = 1.15          # how far a highlight overshoots as it lands: MARK_FILL * this <= 1
 ARROW_TIP = 0.42 * CELL  # length of an arrowhead, at map scale
 ARROW_DASH = 0.2 * CELL  # dash length on the arrows that found nothing
 # Empty cells kept around the map: the legend lives in the right margin, the title and the
@@ -92,7 +76,6 @@ STRAIGHT = "#F59F00"  # a straight scan, while it is live
 DIAGONAL = "#7048E8"  # a diagonal step
 PROBE = "#4DABF7"     # the straight scans a diagonal step fires before continuing
 MISS = "#A5AEB8"      # a scan that found nothing: this, and dashed
-STOPPED = "#343A40"   # ring on the obstacle a scan died against
 # What a scan settles into once it has paid off: its own colour, darkened, and left solid.
 # Keyed by the live colour so a scan can be resolved without being told what kind it was.
 HIT = {
@@ -426,8 +409,8 @@ class SmallGrid:
 
     Same coordinate convention as jps.GridMapImage — the array is padded the way Gridmap
     pads it, and the map proper is centred on the origin — but at this size the cells are
-    worth drawing individually rather than as one image: an obstacle is inset inside its
-    cell, which is what leaves the gridlines readable underneath the scans.
+    worth drawing individually rather than as one image: an obstacle fills its cell edge
+    to edge, and the gridlines are ruled back over the top so the lattice still reads.
 
     The pieces are handed out separately instead of as one group so the map can be built up
     on screen in the order a reader would draw it: rule the grid, drop in the obstacles,
@@ -466,17 +449,34 @@ class SmallGrid:
 
     def filled(self, state, colour):
         return Square(
-            side_length=CELL_FILL * self.cell, stroke_width=0,
+            side_length=CELL_FILL * self.cell, stroke_width=0, stroke_color=GRID_LINE,
             fill_color=colour, fill_opacity=1.0,
         ).move_to(self.cell_point(state))
+
+    def rule(self, width):
+        """Draw the lattice at `width`: the gridlines, and the edge of every filled cell.
+
+        A filled cell carries a border of its own in the gridline colour, exactly under the
+        line that is drawn over the top of it. Belt and braces: a hairline is antialiased
+        slightly differently depending on whether Manim redrew it for an animation or took
+        it from its cached static frame, and doubling it up keeps the lattice the same
+        weight over an obstacle as it is over paper. Called from the scene, which is the
+        first thing to know the camera width every stroke here is scaled against.
+        """
+        self.lines.set_stroke(width=width)
+        for group in (self.walls, self.markers):
+            group.set_stroke(color=GRID_LINE, width=width)
 
     def build_lines(self):
         """The gridlines, and with them the border: the outermost lines are the map's edge.
 
-        Left at a nominal stroke width — the scene sets the real one once it knows how wide
-        the camera ended up, which it cannot work out until this grid exists to ask.
+        Ruled over everything drawn on the map, obstacles and markers included, since those
+        now fill their cells completely and would otherwise swallow the lattice wherever
+        two of them touch. Left at a nominal stroke width — the scene sets the real one once
+        it knows how wide the camera ended up, which it cannot work out until this grid
+        exists to ask.
         """
-        lines = VGroup(z_index=6)
+        lines = VGroup()
         for x in range(1, self.map_cols + 2):
             lines.add(Line(self.cell_point((x - 0.5, 0.5)),
                            self.cell_point((x - 0.5, self.map_rows + 0.5))))
@@ -484,6 +484,11 @@ class SmallGrid:
             lines.add(Line(self.cell_point((0.5, y - 0.5)),
                            self.cell_point((self.map_cols + 0.5, y - 0.5))))
         lines.set_stroke(color=GRID_LINE)
+        # On the whole family, not the group: a z_index handed to VGroup() sits on the
+        # container and leaves every line in it at zero, which is under the obstacles. The
+        # renderer only sometimes honours that — a mobject caught up in an animation is
+        # painted over the static background whatever its z — and the lattice flickers.
+        lines.set_z_index(10, family=True)
         return lines
 
     def cell_point(self, state):
@@ -512,14 +517,37 @@ class JumpPointSearchIntroArrows(MovingCameraScene):
         return size * self.view_width / config.frame_width
 
     def cell_outline(self, cell, colour, opacity=0.0, z_index=7):
+        """A highlight on one cell: inset, so its stroke never crosses into the neighbours.
+
+        A cell-sized square would carry half its stroke outside the cell, and now that the
+        obstacles fill their cells and the gridlines are ruled on top there is nothing to
+        hide that overhang.
+        """
         return Square(
-            side_length=CELL,
+            side_length=MARK_FILL * CELL,
             stroke_color=colour,
             stroke_width=stroke_at(2.6, self.view_width),
             fill_color=colour,
             fill_opacity=opacity,
             z_index=z_index,
         ).move_to(self.grid.cell_point(cell))
+
+    def arrow_point(self, origin, cell):
+        """Where an arrow from `origin` aimed at `cell` should end.
+
+        The centre of the cell, everywhere but the goal. The goal is a filled square drawn
+        over the scans, so the one arrow that reaches it would vanish head and all inside
+        it; that arrow stops on the near edge of the square instead, pulled back along its
+        own direction to whichever side of the cell it is coming in through.
+        """
+        point = self.grid.cell_point(cell)
+        if cell != self.goal_state:
+            return point
+        step = point - self.grid.cell_point(origin)
+        reach = max(abs(step[0]), abs(step[1]))
+        if reach == 0:
+            return point
+        return point - step * (0.5 * CELL / reach)
 
     def jump_colour(self, f):
         """A jump point's colour: its place on the f ramp, or plain amber if that is off."""
@@ -573,14 +601,14 @@ class JumpPointSearchIntroArrows(MovingCameraScene):
         own z_index of 0 and would otherwise render underneath the plate.
         """
         pad = 0.008 * self.view_width
-        content.set_z_index(12, family=True)
+        content.set_z_index(14, family=True)
         backing = RoundedRectangle(
             corner_radius=0.7 * pad,
             width=content.width + 2 * pad,
             height=content.height + 1.7 * pad,
             stroke_width=0, fill_color=PANEL, fill_opacity=0.86,
         ).move_to(content)
-        backing.set_z_index(11)
+        backing.set_z_index(13)
         return VGroup(backing, content)
 
     # -- framing -----------------------------------------------------------
@@ -618,7 +646,7 @@ class JumpPointSearchIntroArrows(MovingCameraScene):
         """The legend's mark for a scan: a short arrow, in the same build as the real ones."""
         arrow = self.scan_arrow(LEFT * 1.5 * size, RIGHT * 1.5 * size, colour,
                                 width=3.4, dashed=dashed, tip_length=1.4 * size)
-        return arrow.set_z_index(12, family=True)
+        return arrow.set_z_index(14, family=True)
 
     def build_hud(self, frame):
         """Title and caption above the map, legend in the margin beside it.
@@ -752,9 +780,11 @@ class JumpPointSearchIntroArrows(MovingCameraScene):
         """A scan as beats: the arrow lengthens by STRIDE cells at a time, head leading.
 
         Rebuilt and transformed rather than extended, because the head has to stay at the
-        front: each beat is the same arrow made longer. Returns (arrow, beats) — the caller
-        plays the beats, alone or against another scan's — and an empty arrow when the very
-        first cell was an obstacle, which is a scan with nothing to point at.
+        front: each beat is the same arrow made longer. Every beat is linear, so a scan
+        several cells long runs at one steady speed instead of easing in and out of a stop
+        at each cell. Returns (arrow, beats) — the caller plays the beats, alone or against
+        another scan's — and an empty arrow when the very first cell was an obstacle, which
+        is a scan with nothing to point at.
         """
         if not cells:
             return VGroup(), []
@@ -763,13 +793,13 @@ class JumpPointSearchIntroArrows(MovingCameraScene):
         tips = [cells[min(index + STRIDE, len(cells)) - 1]
                 for index in range(0, len(cells), STRIDE)]
 
-        arrow = self.scan_arrow(start, self.grid.cell_point(tips[0]), colour, width,
+        arrow = self.scan_arrow(start, self.arrow_point(origin, tips[0]), colour, width,
                                 z_index=z_index)
-        beats = [([GrowFromPoint(arrow, start)], beat)]
+        beats = [([GrowFromPoint(arrow, start, rate_func=linear)], beat)]
         for tip in tips[1:]:
-            longer = self.scan_arrow(start, self.grid.cell_point(tip), colour, width,
+            longer = self.scan_arrow(start, self.arrow_point(origin, tip), colour, width,
                                      z_index=z_index)
-            beats.append(([Transform(arrow, longer)], beat))
+            beats.append(([Transform(arrow, longer, rate_func=linear)], beat))
         return arrow, beats
 
     def settle_arrow(self, arrow, origin, last_cell, colour, z_index=5, width=3.4,
@@ -782,26 +812,21 @@ class JumpPointSearchIntroArrows(MovingCameraScene):
         """
         if not len(arrow):
             return arrow, []
-        final = self.scan_arrow(self.grid.cell_point(origin), self.grid.cell_point(last_cell),
+        final = self.scan_arrow(self.grid.cell_point(origin), self.arrow_point(origin, last_cell),
                                 colour, width, dashed=dashed, z_index=z_index)
         if dashed:
             return final, [FadeOut(arrow), FadeIn(final)]
         return arrow, [Transform(arrow, final)]
 
     def kill_beat(self, scan, arrow, beat, z_index=5, width=3.4):
-        """A scan that found nothing: grey the arrow out to dashes, ring what stopped it.
+        """A scan that found nothing: grey the arrow out to dashes. Returns (keep, beat).
 
-        A scan that ran off the map gets no ring: the padding it stopped on is a wall to the
-        search, but it is not a cell the picture draws.
+        The obstacle that stopped it is left unmarked — the dashed arrow already ends on it,
+        and an outline on every wall the search ever touched only clutters the map.
         """
-        marks = VGroup()
-        animations = []
-        if self.grid.in_map(scan.wall):
-            marks.add(self.cell_outline(scan.wall, STOPPED))
-            animations.append(FadeIn(marks[0], scale=1.3))
         kept, settle = self.settle_arrow(arrow, scan.origin, scan.cells[-1] if scan.cells else None,
                                          MISS, z_index=z_index, width=width, dashed=True)
-        return marks, kept, (animations + settle, beat)
+        return kept, (settle, beat)
 
     def forced_beat(self, scan, beat):
         """Outline the obstacle and the neighbour it forces. No beat if the scan found the goal."""
@@ -812,7 +837,8 @@ class JumpPointSearchIntroArrows(MovingCameraScene):
             marks.add(self.cell_outline(neighbour, FORCED, opacity=0.35))
         if not len(marks):
             return marks, None
-        return marks, ([LaggedStart(*[FadeIn(m, scale=1.3) for m in marks], lag_ratio=0.15)], beat)
+        return marks, ([LaggedStart(*[FadeIn(m, scale=MARK_POP) for m in marks],
+                                    lag_ratio=0.15)], beat)
 
     def probe_beats(self, probe, pace, slow):
         """One of the two straight scans a diagonal step fires, start to finish, as beats.
@@ -828,9 +854,9 @@ class JumpPointSearchIntroArrows(MovingCameraScene):
         drawn.add(arrow)
 
         if probe.jump_point is None:
-            marks, kept, beat = self.kill_beat(
+            kept, beat = self.kill_beat(
                 probe, arrow, beat=(0.2 if slow else 0.12) * pace, z_index=4, width=2.2)
-            drawn.add(marks, kept)
+            drawn.add(kept)
             beats.append(beat)
         else:
             marks, beat = self.forced_beat(probe, beat=0.3 * pace)
@@ -861,14 +887,14 @@ class JumpPointSearchIntroArrows(MovingCameraScene):
 
         for index, step in enumerate(scan.steps):
             slow = detail and index < DETAILED_DIAG_STEPS
-            longer = self.scan_arrow(origin_point, self.grid.cell_point(step.cell),
+            longer = self.scan_arrow(origin_point, self.arrow_point(scan.origin, step.cell),
                                      DIAGONAL, 3.4, z_index=5)
             if index == 0:
                 arrow = longer
                 drawn.add(arrow)
-                grow = GrowFromPoint(arrow, origin_point)
+                grow = GrowFromPoint(arrow, origin_point, rate_func=linear)
             else:
-                grow = Transform(arrow, longer)
+                grow = Transform(arrow, longer, rate_func=linear)
             self.play(grow, run_time=(0.32 if slow else 0.14) * pace)
 
             if index == 0:
@@ -937,8 +963,8 @@ class JumpPointSearchIntroArrows(MovingCameraScene):
                 else:
                     self.say_once("edge", "the edge of the map stops a scan the same way an "
                                           "obstacle does, and returns nothing either")
-                marks, kept, beat = self.kill_beat(scan, arrow, beat=0.25 * pace)
-                drawn.add(marks, kept)
+                kept, beat = self.kill_beat(scan, arrow, beat=0.25 * pace)
+                drawn.add(kept)
                 self.play_beats([beat])
             else:
                 self.say_once("forced", "an obstacle beside the scan forces a neighbour: "
@@ -962,6 +988,7 @@ class JumpPointSearchIntroArrows(MovingCameraScene):
 
         free, path, events = run_search()
         start_state, goal_state = path[0], path[-1]
+        self.goal_state = goal_state  # the one cell arrows stop short of: see arrow_point
 
         self.f_low, self.f_high = f_range(events)
         self.f_labels = VGroup()
@@ -977,7 +1004,7 @@ class JumpPointSearchIntroArrows(MovingCameraScene):
         self.grid = SmallGrid(free, start_state, goal_state)
         self.view_width, centre = self.framing((1 - MARGIN_LEFT, cols - 1 + MARGIN_RIGHT),
                                                (1 - MARGIN_TOP, rows - 1 + MARGIN_BOTTOM))
-        self.grid.lines.set_stroke(width=stroke_at(1.6, self.view_width))
+        self.grid.rule(stroke_at(1.6, self.view_width))
 
         frame = self.camera.frame
         frame.set(width=self.view_width).move_to(centre)
@@ -1013,9 +1040,9 @@ class JumpPointSearchIntroArrows(MovingCameraScene):
                 )
                 if not said:
                     self.say(f"arriving {arrival}: {left} left to scan")
-                cursor = Circle(radius=0.7 * CELL, color=DIAGONAL,
-                                stroke_width=stroke_at(3.0, self.view_width),
-                                z_index=9).move_to(self.grid.cell_point(event.state))
+                # The cell coming off the open list, boxed rather than ringed: the old ring
+                # was wider than a cell and reached over its neighbours.
+                cursor = self.cell_outline(event.state, DIAGONAL, z_index=9)
                 self.play(Create(cursor), run_time=0.3)
                 scans.add(cursor)
 
@@ -1038,26 +1065,22 @@ class JumpPointSearchIntroArrows(MovingCameraScene):
         flash = Flash(self.grid.markers[1], color=GOAL, flash_radius=1.4 * CELL,
                       line_length=0.7 * CELL,
                       line_stroke_width=stroke_at(3.0, self.view_width))
-        flash.lines.set_z_index(10)  # Flash builds its lines at z 0, under everything drawn
+        flash.lines.set_z_index(12)  # Flash builds its lines at z 0, under everything drawn
         self.play(flash, Indicate(self.grid.markers[1], color=GOAL, scale_factor=1.4),
                   run_time=1.0)
 
         # -- the path -------------------------------------------------------
 
-        # Drawn like every other scan, only unbroken and with the head kept to the very end:
-        # the shaft stops short of the goal by exactly the length of the head it makes room for.
+        # A plain unbroken line, no head: nothing about it is a scan, and the goal square it
+        # runs into says which end it finished on. Above the gridlines, unlike the scans.
         corners = self.grid.cell_points(path)
-        head, shaft_end = self.arrow_head(corners[-2], corners[-1], PATH, width=4.5,
-                                          tip_length=0.55 * CELL)
-        path_line = VMobject(z_index=10)
-        path_line.set_points_as_corners(list(corners[:-1]) + [shaft_end])
+        path_line = VMobject(z_index=11)
+        path_line.set_points_as_corners(list(corners))
         path_line.set_stroke(color=PATH, width=stroke_at(4.5, self.view_width))
-        head.set_z_index(10)
 
         self.play(jump_points.animate.set_opacity(0.25),
                   scans.animate.set_opacity(0.12), run_time=0.9)
         self.say(f"{plural(len(path), 'jump point')} on the path, "
                  f"and it turns {plural(len(path) - 2, 'time')}")
         self.play(Create(path_line), run_time=3.0, rate_func=linear)
-        self.play(GrowFromPoint(head, shaft_end), run_time=0.4)
         self.wait(2)
